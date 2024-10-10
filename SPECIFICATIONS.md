@@ -30,7 +30,7 @@ The format supports several predefined types, each identified by a unique ID and
   * `items*`: A continuous block of `items_count` elements, all of the specified type.
 
 * Object (ID: 6)
-  Format: `<items_count: uint32><(key: string, value: item)*>`
+  Format: `<items_count: uint32><(key: string, type: uint32, value: item)*>`
   * `items_count`: The number of key-value pairs in the object.
   * `(key: string, type: uint32, value: item)*`: A sequence of `items_count` key-value pairs, where each key is a UTF-8 string.
 

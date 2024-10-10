@@ -1,5 +1,6 @@
 ﻿using System.Collections;
 using TSONify.Helpers;
+using TSONify.Models;
 
 namespace TSONify;
 
@@ -10,15 +11,15 @@ public class TSONSerializer
         using var stream = new MemoryStream();
         using var writer = new BinaryWriter(stream);
 
-        BinaryUtils.Write(writer, (ushort)0x54FA);
-        BinaryUtils.Write(writer, (byte)1);
+        BinaryUtils.WriteUShort(writer, 0x54FA);
+        BinaryUtils.WriteByte(writer, 1);
 
         var types = GetTypes(type);
         var typesBuffer = SerializeTypes(types);
         var contentBuffer = SerializeContent(types, obj, type);
 
-        BinaryUtils.Write(writer, (uint)typesBuffer.Length);
-        BinaryUtils.Write(writer, (uint)contentBuffer.Length);
+        BinaryUtils.WriteUInt(writer, (uint)typesBuffer.Length);
+        BinaryUtils.WriteUInt(writer, (uint)contentBuffer.Length);
 
         writer.Write(typesBuffer);
         writer.Write(contentBuffer);
@@ -26,41 +27,66 @@ public class TSONSerializer
         return stream.ToArray();
     }
 
-    private byte[] SerializeTypes(IReadOnlyList<Models.TypeInfo> types)
+    public object? Deserialize(Type type, byte[] content)
+    {
+        using var stream = new MemoryStream(content);
+        using var reader = new BinaryReader(stream);
+
+        if (BinaryUtils.ReadUShort(reader) != 0x54FA)
+            throw new FormatException("Invalid format");
+
+        if (BinaryUtils.ReadByte(reader) != 1)
+            throw new FormatException("Not supported version");
+
+        var typesLength = (int)BinaryUtils.ReadUInt(reader);
+        var contentLength = (int)BinaryUtils.ReadUInt(reader);
+        if (typesLength + contentLength != stream.Length - stream.Position)
+            throw new FormatException("Document length seems invalid");
+
+        var typesBuffer = reader.ReadBytes(typesLength);
+        var contentBuffer = reader.ReadBytes(contentLength);
+
+        var customTypes = DeserializeTypes(typesBuffer);
+        return DeserializeContent(contentBuffer, customTypes);
+    }
+
+    private byte[] SerializeTypes(IReadOnlyList<WritableType> types)
     {
         using var stream = new MemoryStream();
         using var writer = new BinaryWriter(stream);
 
         var customTypes = types.Select(t => t.Type).ToList();
-        BinaryUtils.Write(writer, (uint)types.Count);
+        BinaryUtils.WriteUInt(writer, (uint)types.Count);
         foreach (var type in types)
         {
             foreach (var property in type.Properties)
             {
-                BinaryUtils.Write(writer, property.Name);
+                BinaryUtils.WriteString(writer, property.Name);
                 WriteTypeId(writer, property.Type, customTypes);
             }
 
-            BinaryUtils.Write(writer, (byte)0);
+            BinaryUtils.WriteByte(writer, 0);
         }
 
         return stream.ToArray();
     }
 
-    private byte[] SerializeContent(IReadOnlyList<Models.TypeInfo> types, object? obj, Type type)
+    private byte[] SerializeContent(IReadOnlyList<WritableType> types, object? obj, Type type)
     {
         using var stream = new MemoryStream();
         using var writer = new BinaryWriter(stream);
 
+        var customTypes = types.Select(t => t.Type).ToList();
+        WriteTypeId(writer, type, customTypes);
         SerializeContent(writer, types, obj, type);
         return stream.ToArray();
     }
 
-    private static void SerializeContent(BinaryWriter writer, IReadOnlyList<Models.TypeInfo> types, object? obj, Type type)
+    private static void SerializeContent(BinaryWriter writer, IReadOnlyList<WritableType> types, object? obj, Type type)
     {
         if (obj == null)
         {
-            BinaryUtils.Write(writer, (byte)0);
+            BinaryUtils.WriteByte(writer, 0);
             return;
         }
 
@@ -70,25 +96,27 @@ public class TSONSerializer
             switch (typeId)
             {
                 case 1:
-                    BinaryUtils.Write(writer, Convert.ToBoolean(obj));
+                    BinaryUtils.WriteBool(writer, Convert.ToBoolean(obj));
                     break;
                 case 2:
-                    BinaryUtils.Write(writer, Convert.ToInt32(obj));
+                    BinaryUtils.WriteInt(writer, Convert.ToInt32(obj));
                     break;
                 case 3:
-                    BinaryUtils.Write(writer, Convert.ToDouble(obj));
+                    BinaryUtils.WriteDouble(writer, Convert.ToDouble(obj));
                     break;
                 case 4:
-                    BinaryUtils.Write(writer, obj.ToString()!);
+                    BinaryUtils.WriteByte(writer, 1);
+                    BinaryUtils.WriteString(writer, obj.ToString()!);
                     break;
                 case 5:
                 {
+                    BinaryUtils.WriteByte(writer, 1);
                     if (type.IsArray)
                     {
                         var arr = (Array)obj;
                         var length = arr.Length;
                         var itemType = type.GetElementType()!;
-                        BinaryUtils.Write(writer, (uint)length);
+                        BinaryUtils.WriteUInt(writer, (uint)length);
                         for (var i = 0; i < length; i++)
                         {
                             SerializeContent(writer, types, arr.GetValue(i), itemType);
@@ -100,6 +128,7 @@ public class TSONSerializer
                         var listType = typeof(IReadOnlyCollection<>).MakeGenericType(itemType);
                         var length = (int)listType.GetProperty("Count")!.GetValue(obj)!;
                         var index = 0;
+                        BinaryUtils.WriteUInt(writer, (uint)length);
                         foreach (var item in (IEnumerable)obj)
                         {
                             SerializeContent(writer, types, item, listType);
@@ -111,10 +140,13 @@ public class TSONSerializer
 
                     break;
                 }
+                case 6:
+                    throw new NotSupportedException();
             }
         }
         else
         {
+            BinaryUtils.WriteByte(writer, 1);
             var info = types.FirstOrDefault(t => t.Type == type);
             if (info == null)
                 throw new InvalidOperationException($"Cannot find custom type '{type}'");
@@ -126,28 +158,53 @@ public class TSONSerializer
         }
     }
 
+    private IReadOnlyList<ReadableType> DeserializeTypes(byte[] content)
+    {
+        using var stream = new MemoryStream(content);
+        using var reader = new BinaryReader(stream);
+
+        var types = new List<ReadableType>();
+        var count = BinaryUtils.ReadUInt(reader);
+        for (var i = 0; i < count; i++)
+        {
+            types.Add(ReadableType.ReadCustomType(reader));
+        }
+
+        ReadableType.UpdateCustomTypes(types);
+        return types.ToArray();
+    }
+
+    private static object? DeserializeContent(byte[] content, IReadOnlyList<ReadableType> customTypes)
+    {
+        using var stream = new MemoryStream(content);
+        using var reader = new BinaryReader(stream);
+
+        var rootType = ReadableType.ResolveType(reader, customTypes);
+        return rootType?.Read(reader);
+    }
+
     private static void WriteTypeId(BinaryWriter writer, Type type, List<Type> customTypes)
     {
         var typeId = GetPredefinedTypeId(type);
         if (typeId >= 0)
         {
-            BinaryUtils.Write(writer, (uint)typeId);
+            BinaryUtils.WriteUInt(writer, (uint)typeId);
             if (typeId == 5)
                 WriteTypeId(writer, type.IsArray ? type.GetElementType()! : type.GetGenericArguments()[0], customTypes);
         }
         else
         {
-            BinaryUtils.Write(writer, (uint)(customTypes.IndexOf(type) + 7));
+            BinaryUtils.WriteUInt(writer, (uint)(customTypes.IndexOf(type) + 7));
         }
     }
 
-    private static IReadOnlyList<Models.TypeInfo> GetTypes(Type type)
+    private static IReadOnlyList<WritableType> GetTypes(Type type)
     {
         var hashSet = new HashSet<Type>();
         return AddTypes(type, hashSet).ToArray();
     }
 
-    private static IEnumerable<Models.TypeInfo> AddTypes(Type type, HashSet<Type> hashSet)
+    private static IEnumerable<WritableType> AddTypes(Type type, HashSet<Type> hashSet)
     {
         var predefinedId = GetPredefinedTypeId(type);
         if (predefinedId == 5)
@@ -166,7 +223,7 @@ public class TSONSerializer
             yield break;
         }
 
-        var info = new Models.TypeInfo(type);
+        var info = new WritableType(type);
         foreach (var prop in info.Properties)
         {
             foreach (var p in AddTypes(prop.Type, hashSet))

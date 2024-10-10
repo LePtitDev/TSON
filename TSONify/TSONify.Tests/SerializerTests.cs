@@ -16,5 +16,7 @@ public class SerializerTests
         var serializer = new TSONSerializer();
         var data = serializer.Serialize(nuGetOrg!, typeof(NuGetOrgJson));
         File.WriteAllBytes(outputPath, data);
+
+        var result = serializer.Deserialize(typeof(NuGetOrgJson), data);
     }
 }

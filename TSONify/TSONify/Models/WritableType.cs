@@ -1,11 +1,10 @@
-﻿using System.Reflection;
-using System.Text.Json.Serialization;
+﻿using System.Text.Json.Serialization;
 
 namespace TSONify.Models;
 
-internal class TypeInfo
+internal class WritableType
 {
-    public TypeInfo(Type type)
+    public WritableType(Type type)
     {
         Type = type;
         Properties = GetTypeProperties(type).ToArray();
@@ -13,30 +12,30 @@ internal class TypeInfo
 
     public Type Type { get; }
 
-    public IReadOnlyList<PropertyInfo> Properties { get; }
+    public IReadOnlyList<WritableProperty> Properties { get; }
 
     public override string ToString()
     {
         return $"{Type.Name} ({Properties.Count} properties)";
     }
 
-    private static IEnumerable<PropertyInfo> GetTypeProperties(Type type)
+    private static IEnumerable<WritableProperty> GetTypeProperties(Type type)
     {
         foreach (var property in type.GetProperties())
         {
             if (!property.CanRead)
                 continue;
 
-            yield return new PropertyInfo(property);
+            yield return new WritableProperty(property);
         }
     }
 }
 
-internal class PropertyInfo
+internal class WritableProperty
 {
     private readonly Func<object, object?> _getter;
 
-    public PropertyInfo(System.Reflection.PropertyInfo property)
+    public WritableProperty(System.Reflection.PropertyInfo property)
     {
         _getter = property.GetValue;
         Name = ResolveName(property);
